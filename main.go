@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strings"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -45,6 +47,24 @@ const (
 	MQTT_ADDRESS = "tcp://localhost:1883"
 	CLIENT_ID    = "wifi-presence"
 )
+
+func findDevice(line string) (Device, bool) {
+	macRegex := regexp.MustCompile("([[:xdigit:]]{2}[:-]){5}([[:xdigit:]]{2})")
+
+	mac := macRegex.FindString(line)
+	mac = strings.ToUpper(strings.ReplaceAll(mac, "-", ":"))
+
+	for _, device := range devices {
+		validMac := mac == device.mac
+		if validMac {
+			return device, true
+		}
+	}
+	return Device{
+		name: fmt.Sprintf("unknown device (%s)", mac),
+		mac:  mac,
+	}, false
+}
 
 func main() {
 	opts := mqtt.NewClientOptions()
@@ -93,33 +113,31 @@ func main() {
 
 	for {
 		n, _, err := sock.ReadFromUDP(buf)
-		log.Printf("Received %d bytes from %s\n", n, addr)
 
 		if err != nil {
 			log.Println("Error: ", err)
 		}
 
 		line := string(buf[:n])
-		log.Println(line)
 
-		for _, device := range devices {
-			validMac := strings.Contains(line, device.mac)
-			if !validMac {
-				continue
-			}
+		disconnected := strings.Contains(line, " disconnected")
+		connected := strings.Contains(line, " connected")
 
-			disconnected := strings.Contains(line, " disconnected")
-			connected := strings.Contains(line, " connected")
+		if !connected && !disconnected {
+			log.Printf("[?] %s\n", line)
+			continue
+		}
 
-			if !connected && !disconnected {
-				continue
-			}
+		device, knownDevice := findDevice(line)
 
-			if connected {
-				log.Printf("%s connected\n", device.name)
+		if connected {
+			log.Printf("[+] %s connected\n", device.name)
+			if knownDevice {
 				client.Publish("device/wifi/"+device.name+"/status", 0, true, "ON")
-			} else if disconnected {
-				log.Printf("%s disconnected\n", device.name)
+			}
+		} else if disconnected {
+			log.Printf("[-] %s disconnected\n", device.name)
+			if knownDevice {
 				client.Publish("device/wifi/"+device.name+"/status", 0, true, "OFF")
 			}
 		}
